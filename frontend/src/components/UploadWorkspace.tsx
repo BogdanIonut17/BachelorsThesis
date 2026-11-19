@@ -146,6 +146,8 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
     setRequestError(null);
     setUploadPercent(0);
     setPhase('idle');
+    setCalibrationText('');
+    setCalibrationError(null);
   };
 
   const status = session?.status;
@@ -310,7 +312,7 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
 
       {session && <PrivacyAlert secrets={session.detectedSecrets} />}
 
-      {session && (status === 'ReadyForReview' || status === 'Failed') && (
+      {session && isTerminalStatus(session.status) && (
         <div>
           <button
             type="button"

@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -38,7 +38,7 @@ public sealed class LogIngestionService : ILogIngestionService
 
     private static readonly Regex[] AnchorPatterns =
     [
-        new(@"(?m)^\s*(?:\S+@\S+(?::\S*)?\s*)?[$#â¯]\s+[A-Za-z./~][^\r\n]*", Options, RegexTimeout),
+        new(@"(?m)^\s*(?:\S+@\S+(?::\S*)?\s*)?[$#\u276F]\s+[A-Za-z./~][^\r\n]*", Options, RegexTimeout),
         new(@"(?m)^\s*PS\s[^>\r\n]*>\s*\S", Options, RegexTimeout),
         new(@"\b(?:docker|podman|kubectl|dotnet|npm|pnpm|yarn|cargo|gradle|mvn|cmake|msbuild|pip|tsc|webpack)\s+[a-z\-]+", Options | RegexOptions.IgnoreCase, RegexTimeout),
         new(@"Successfully (?:built|tagged)|Build (?:succeeded|FAILED)|Step \d+/\d+|Compiled successfully|npm ERR!|error CS\d+|Pulling from|Container \S+\s+(?:Started|Created|Running|Healthy)", Options | RegexOptions.IgnoreCase, RegexTimeout),
