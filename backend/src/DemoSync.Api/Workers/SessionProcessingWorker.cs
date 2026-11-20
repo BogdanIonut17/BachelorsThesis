@@ -1,32 +1,27 @@
 using DemoSync.Api.Models;
 using DemoSync.Api.Services;
-using Microsoft.Extensions.Options;
 
 namespace DemoSync.Api.Workers;
 
-public sealed class ProcessingOptions
-{
-    public int StepDelayMilliseconds { get; set; } = 1500;
-}
-
 public sealed class SessionProcessingWorker : BackgroundService
 {
-    private static readonly int[] ProgressSteps = [25, 60, 100];
-
     private readonly IBackgroundJobQueue _queue;
     private readonly ISessionRepository _repository;
-    private readonly ProcessingOptions _options;
+    private readonly ISessionStorage _storage;
+    private readonly IMediaExtractor _extractor;
     private readonly ILogger<SessionProcessingWorker> _logger;
 
     public SessionProcessingWorker(
         IBackgroundJobQueue queue,
         ISessionRepository repository,
-        IOptions<ProcessingOptions> options,
+        ISessionStorage storage,
+        IMediaExtractor extractor,
         ILogger<SessionProcessingWorker> logger)
     {
         _queue = queue;
         _repository = repository;
-        _options = options.Value;
+        _storage = storage;
+        _extractor = extractor;
         _logger = logger;
     }
 
@@ -55,7 +50,17 @@ public sealed class SessionProcessingWorker : BackgroundService
             catch (Exception exception)
             {
                 _logger.LogError(exception, "Processing of session {SessionId} failed.", sessionId);
-                _repository.Update(sessionId, s => s.Status = SessionStatus.Failed);
+
+                var message = exception is MediaExtractionException
+                    ? exception.Message
+                    : "An unexpected error occurred while processing the session.";
+
+                _repository.Update(sessionId, session =>
+                {
+                    session.Status = SessionStatus.Failed;
+                    session.ProcessingStage = "Failed";
+                    session.ErrorMessage = message;
+                });
             }
         }
     }
@@ -78,6 +83,8 @@ public sealed class SessionProcessingWorker : BackgroundService
 
             session.Status = SessionStatus.Processing;
             session.ProgressPercent = 0;
+            session.ProcessingStage = "Starting";
+            session.ErrorMessage = null;
             started = true;
         });
 
@@ -86,19 +93,40 @@ public sealed class SessionProcessingWorker : BackgroundService
             return;
         }
 
-        foreach (var progress in ProgressSteps)
-        {
-            await Task.Delay(_options.StepDelayMilliseconds, cancellationToken);
+        var videoPath = _storage.GetVideoPath(sessionId)
+            ?? throw new MediaExtractionException("The uploaded video file could not be found on disk.");
+        var sessionDirectory = _storage.GetSessionDirectory(sessionId);
 
-            var isLast = progress == ProgressSteps[^1];
-            _repository.Update(sessionId, session =>
+        var output = await _extractor.ExtractAsync(
+            sessionId,
+            videoPath,
+            sessionDirectory,
+            (percent, stage) =>
             {
-                session.ProgressPercent = progress;
-                if (isLast)
-                {
-                    session.Status = SessionStatus.ReadyForReview;
-                }
-            });
-        }
+                ReportProgress(sessionId, percent, stage);
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+
+        ReportProgress(sessionId, 95, "Saving artifacts");
+
+        var events = _repository.Get(sessionId)?.TechnicalEvents ?? [];
+        var artifacts = new SessionArtifacts(output.Video, output.Frames, output.AudioIntervals, events);
+        await _storage.SaveArtifactsAsync(sessionId, artifacts, cancellationToken);
+
+        _repository.Update(sessionId, session =>
+        {
+            session.Artifacts = artifacts;
+            session.ProgressPercent = 100;
+            session.ProcessingStage = "Completed";
+            session.Status = SessionStatus.ReadyForReview;
+        });
     }
+
+    private void ReportProgress(Guid sessionId, int percent, string stage) =>
+        _repository.Update(sessionId, session =>
+        {
+            session.ProgressPercent = percent;
+            session.ProcessingStage = stage;
+        });
 }

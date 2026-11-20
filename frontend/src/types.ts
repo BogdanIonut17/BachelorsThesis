@@ -12,6 +12,48 @@ export interface SensitiveMatch {
   maskedPreview: string;
 }
 
+export interface VideoMetadata {
+  durationSeconds: number;
+  width: number;
+  height: number;
+  frameRate: number;
+  hasAudio: boolean;
+}
+
+export interface ExtractedFrame {
+  index: number;
+  timestampSeconds: number;
+  fileName: string;
+}
+
+export interface AudioActivityInterval {
+  startSeconds: number;
+  endSeconds: number;
+  isActive: boolean;
+}
+
+export type TechnicalEventCategory = 'Command' | 'Build' | 'Container' | 'Error' | 'ExitCode' | 'Output';
+
+export interface TechnicalEvent {
+  index: number;
+  timestampSeconds: number;
+  eventType: string;
+  category: TechnicalEventCategory;
+  text: string;
+  isAnchorable: boolean;
+}
+
+export interface SessionArtifacts {
+  video: VideoMetadata;
+  frames: ExtractedFrame[];
+  audioIntervals: AudioActivityInterval[];
+  technicalEvents: TechnicalEvent[];
+}
+
+export interface SessionArtifactsDto extends SessionArtifacts {
+  appliedReferenceOffsetSeconds: number | null;
+}
+
 export interface ProcessingSessionDto {
   id: string;
   videoFileName: string;
@@ -24,6 +66,9 @@ export interface ProcessingSessionDto {
   parsedEventCount: number;
   detectedSecrets: SensitiveMatch[];
   createdAt: string;
+  processingStage?: string | null;
+  errorMessage?: string | null;
+  artifacts?: SessionArtifacts | null;
 }
 
 export const TERMINAL_STATUSES: readonly SessionStatus[] = [

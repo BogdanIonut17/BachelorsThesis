@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using DemoSync.Api.Models;
 using Microsoft.Extensions.Options;
 
 namespace DemoSync.Api.Services;
@@ -16,11 +19,33 @@ public interface ISessionStorage
     Task SaveSanitizedLogAsync(Guid sessionId, string sanitizedContent, CancellationToken cancellationToken);
 
     void Delete(Guid sessionId);
+
+    string GetSessionDirectory(Guid sessionId);
+
+    /// <summary>Returns the stored video path, or null when no video has been saved for the session.</summary>
+    string? GetVideoPath(Guid sessionId);
+
+    /// <summary>Resolves a frame inside the session's frames directory; rejects anything that is not a bare file name.</summary>
+    string GetFramePath(Guid sessionId, string fileName);
+
+    Task SaveArtifactsAsync(Guid sessionId, SessionArtifacts artifacts, CancellationToken cancellationToken);
 }
 
 public sealed class LocalSessionStorage : ISessionStorage
 {
     public const string SanitizedLogFileName = "sanitized.log";
+    public const string ArtifactsFileName = "artifacts.json";
+
+    private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mkv", ".webm"
+    };
+
+    private static readonly JsonSerializerOptions ArtifactsJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     private readonly string _sessionsRoot;
 
@@ -76,6 +101,46 @@ public sealed class LocalSessionStorage : ISessionStorage
     }
 
     public string GetSessionDirectory(Guid sessionId) => Path.Combine(_sessionsRoot, sessionId.ToString("D"));
+
+    public string? GetVideoPath(Guid sessionId)
+    {
+        var directory = GetSessionDirectory(sessionId);
+        if (!Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        return Directory
+            .EnumerateFiles(directory, "recording.*")
+            .FirstOrDefault(path => VideoExtensions.Contains(Path.GetExtension(path)));
+    }
+
+    public string GetFramePath(Guid sessionId, string fileName)
+    {
+        var safeName = Path.GetFileName(fileName);
+        if (string.IsNullOrEmpty(safeName) || !string.Equals(safeName, fileName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Frame file name must not contain path segments.", nameof(fileName));
+        }
+
+        return Path.Combine(GetSessionDirectory(sessionId), FfmpegMediaExtractor.FramesDirectoryName, safeName);
+    }
+
+    public async Task SaveArtifactsAsync(Guid sessionId, SessionArtifacts artifacts, CancellationToken cancellationToken)
+    {
+        var directory = GetSessionDirectory(sessionId);
+        Directory.CreateDirectory(directory);
+
+        await using var stream = new FileStream(
+            Path.Combine(directory, ArtifactsFileName),
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.Read,
+            bufferSize: 4096,
+            useAsync: true);
+
+        await JsonSerializer.SerializeAsync(stream, artifacts, ArtifactsJsonOptions, cancellationToken);
+    }
 
     public static string SanitizeFileName(string? fileName, string fallback)
     {

@@ -1,3 +1,4 @@
+using DemoSync.Api.Models;
 using DemoSync.Api.Services;
 using Xunit;
 
@@ -133,5 +134,23 @@ public class LogIngestionServiceTests
 
         Assert.False(result.IsAutoSyncFeasible);
         Assert.True(result.RequiresManualReference);
+    }
+
+    [Fact]
+    public void Analyze_ZeroErrorBuildSummary_ClassifiesAsBuildNotError()
+    {
+        var castContent = string.Join('\n',
+            """{"version": 2, "width": 120, "height": 30, "timestamp": 1732000000}""",
+            """[1.0, "o", "$ dotnet build\r\n"]""",
+            """[5.0, "o", "Build succeeded. 0 Warning(s), 0 Error(s)\r\n"]""",
+            """[6.0, "o", "Build FAILED. 2 Error(s)\r\n"]""");
+
+        var result = _service.Analyze(castContent, "sample.cast", manualReferenceOffsetSeconds: null);
+
+        var successEvent = Assert.Single(result.Events, e => e.Text.Contains("Build succeeded"));
+        Assert.Equal(TechnicalEventCategory.Build, successEvent.Category);
+
+        var failureEvent = Assert.Single(result.Events, e => e.Text.Contains("Build FAILED"));
+        Assert.Equal(TechnicalEventCategory.Error, failureEvent.Category);
     }
 }

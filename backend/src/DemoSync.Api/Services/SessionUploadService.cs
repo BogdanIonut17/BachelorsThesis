@@ -50,7 +50,8 @@ public sealed class SessionUploadService : ISessionUploadService
             var scan = _scanner.Scan(logText);
             await _storage.SaveSanitizedLogAsync(sessionId, scan.SanitizedContent, cancellationToken);
 
-            var analysis = _ingestion.Analyze(logText, stored.LogFileName, manualReferenceOffsetSeconds);
+            // Analyze the sanitized copy so masked secrets never reach extracted events or downstream AI pipelines.
+            var analysis = _ingestion.Analyze(scan.SanitizedContent, stored.LogFileName, manualReferenceOffsetSeconds);
 
             var session = new ProcessingSession
             {
@@ -62,7 +63,8 @@ public sealed class SessionUploadService : ISessionUploadService
                 IsAutoSyncFeasible = analysis.IsAutoSyncFeasible,
                 SyncWarningMessage = analysis.SyncWarningMessage,
                 ParsedEventCount = analysis.ParsedEventCount,
-                DetectedSecrets = [.. scan.Matches]
+                DetectedSecrets = [.. scan.Matches],
+                TechnicalEvents = [.. analysis.Events]
             };
 
             _repository.Add(session);

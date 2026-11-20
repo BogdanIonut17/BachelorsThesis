@@ -31,7 +31,10 @@ public sealed record ProcessingSessionDto(
     string? SyncWarningMessage,
     int ParsedEventCount,
     IReadOnlyList<SensitiveMatch> DetectedSecrets,
-    DateTimeOffset CreatedAt)
+    DateTimeOffset CreatedAt,
+    string? ProcessingStage = null,
+    string? ErrorMessage = null,
+    SessionArtifacts? Artifacts = null)
 {
     public static ProcessingSessionDto From(ProcessingSession session) => new(
         session.Id,
@@ -44,5 +47,23 @@ public sealed record ProcessingSessionDto(
         session.SyncWarningMessage,
         session.ParsedEventCount,
         session.DetectedSecrets.ToList(),
-        session.CreatedAt);
+        session.CreatedAt,
+        session.ProcessingStage,
+        session.ErrorMessage,
+        session.Artifacts);
+}
+
+public sealed record SessionArtifactsDto(
+    VideoMetadata Video,
+    IReadOnlyList<ExtractedFrame> Frames,
+    IReadOnlyList<AudioActivityInterval> AudioIntervals,
+    IReadOnlyList<TechnicalEvent> TechnicalEvents,
+    double? AppliedReferenceOffsetSeconds)
+{
+    public static SessionArtifactsDto From(SessionArtifacts artifacts, double? appliedReferenceOffsetSeconds) => new(
+        artifacts.Video,
+        artifacts.Frames,
+        artifacts.AudioIntervals,
+        artifacts.TechnicalEvents,
+        appliedReferenceOffsetSeconds);
 }

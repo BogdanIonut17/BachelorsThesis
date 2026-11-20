@@ -16,11 +16,13 @@ builder.Services
 
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 524_288_000);
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
-builder.Services.Configure<ProcessingOptions>(builder.Configuration.GetSection("Processing"));
+builder.Services.Configure<FfmpegOptions>(builder.Configuration.GetSection("Ffmpeg"));
 
 builder.Services.AddSingleton<ISessionRepository, InMemorySessionRepository>();
 builder.Services.AddSingleton<ISessionStorage, LocalSessionStorage>();
 builder.Services.AddSingleton<IBackgroundJobQueue, BackgroundJobQueue>();
+builder.Services.AddSingleton<IProcessRunner, ProcessRunner>();
+builder.Services.AddSingleton<IMediaExtractor, FfmpegMediaExtractor>();
 builder.Services.AddSingleton<IUploadValidator, UploadValidator>();
 builder.Services.AddSingleton<ILogIngestionService, LogIngestionService>();
 builder.Services.AddSingleton<ISensitiveDataScanner, SensitiveDataScanner>();

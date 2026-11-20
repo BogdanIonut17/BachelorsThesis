@@ -24,6 +24,15 @@ public sealed class ProcessingSession
 
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 
+    public string? ProcessingStage { get; set; }
+
+    public string? ErrorMessage { get; set; }
+
+    public SessionArtifacts? Artifacts { get; set; }
+
+    /// <summary>Technical events extracted from the sanitized log at upload time.</summary>
+    public List<TechnicalEvent> TechnicalEvents { get; set; } = [];
+
     public bool HasSyncAnchor => IsAutoSyncFeasible || ManualReferenceOffsetSeconds.HasValue;
 
     public ProcessingSession Clone() => new()
@@ -38,6 +47,10 @@ public sealed class ProcessingSession
         SyncWarningMessage = SyncWarningMessage,
         ParsedEventCount = ParsedEventCount,
         DetectedSecrets = [.. DetectedSecrets],
-        CreatedAt = CreatedAt
+        CreatedAt = CreatedAt,
+        ProcessingStage = ProcessingStage,
+        ErrorMessage = ErrorMessage,
+        Artifacts = Artifacts,
+        TechnicalEvents = [.. TechnicalEvents]
     };
 }

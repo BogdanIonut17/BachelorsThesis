@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DemoSync.Api.Models;
 
 namespace DemoSync.Api.Services;
 
@@ -17,7 +18,8 @@ public sealed record LogAnalysisResult(
     bool HasReliableTimestamps,
     bool IsAutoSyncFeasible,
     string? SyncWarningMessage,
-    bool RequiresManualReference);
+    bool RequiresManualReference,
+    IReadOnlyList<TechnicalEvent> Events);
 
 public interface ILogIngestionService
 {
@@ -86,7 +88,8 @@ public sealed class LogIngestionService : ILogIngestionService
             hasReliableTimestamps,
             feasible,
             warning,
-            RequiresManualReference: !feasible && !manualReferenceOffsetSeconds.HasValue);
+            RequiresManualReference: !feasible && !manualReferenceOffsetSeconds.HasValue,
+            parse.Events);
     }
 
     private static LogFormat DetectFormat(string fileName, IReadOnlyList<string> lines)
@@ -136,6 +139,7 @@ public sealed class LogIngestionService : ILogIngestionService
         var parsed = 0;
         var anchorable = 0;
         var previous = double.NegativeInfinity;
+        var events = new List<TechnicalEvent>();
 
         for (var i = 1; i < lines.Count; i++)
         {
@@ -160,13 +164,21 @@ public sealed class LogIngestionService : ILogIngestionService
                 previous = time.Value;
             }
 
-            if (IsAnchorable(type == "x" ? "exit" : null, text))
+            var eventName = type == "x" ? "exit" : null;
+            var cleanText = StripAnsi(text);
+            var isAnchorable = IsAnchorable(eventName, cleanText);
+            if (isAnchorable)
             {
                 anchorable++;
             }
+
+            if (type != "r" && (cleanText.Length > 0 || type == "x"))
+            {
+                events.Add(CreateEvent(events.Count, time ?? 0, type, eventName, cleanText, isAnchorable));
+            }
         }
 
-        return new ParseOutcome(parsed, anchorable, problem);
+        return new ParseOutcome(parsed, anchorable, problem, events);
     }
 
     private static bool TryReadCastHeader(string line, out string problem)
@@ -252,6 +264,8 @@ public sealed class LogIngestionService : ILogIngestionService
         var parsed = 0;
         var anchorable = 0;
         var previous = double.NegativeInfinity;
+        var events = new List<TechnicalEvent>();
+        var rawTimes = new List<double?>();
 
         for (var i = 0; i < lines.Count; i++)
         {
@@ -285,7 +299,8 @@ public sealed class LogIngestionService : ILogIngestionService
 
                 parsed++;
 
-                if (!TryReadTimestamp(root, out var seconds))
+                var hasTimestamp = TryReadTimestamp(root, out var seconds);
+                if (!hasTimestamp)
                 {
                     problem ??= $"line {i + 1} has a missing or invalid timestamp";
                 }
@@ -298,14 +313,34 @@ public sealed class LogIngestionService : ILogIngestionService
                     previous = seconds;
                 }
 
-                if (IsAnchorable(eventName, output))
+                var cleanOutput = output is null ? null : StripAnsi(output);
+                var isAnchorable = IsAnchorable(eventName, cleanOutput);
+                if (isAnchorable)
                 {
                     anchorable++;
+                }
+
+                var text = cleanOutput ?? string.Empty;
+                if (text.Length > 0 || !string.IsNullOrEmpty(eventName))
+                {
+                    events.Add(CreateEvent(events.Count, 0, eventName ?? "output", eventName, text, isAnchorable));
+                    rawTimes.Add(hasTimestamp ? seconds : null);
                 }
             }
         }
 
-        return new ParseOutcome(parsed, anchorable, problem);
+        // Structured logs may carry absolute (epoch / ISO-8601) timestamps; expose them relative to the first event.
+        var origin = rawTimes.FirstOrDefault(time => time.HasValue);
+        if (origin.HasValue)
+        {
+            for (var i = 0; i < events.Count; i++)
+            {
+                var relative = rawTimes[i] is { } raw ? Math.Max(0, raw - origin.Value) : 0;
+                events[i] = events[i] with { TimestampSeconds = relative };
+            }
+        }
+
+        return new ParseOutcome(parsed, anchorable, problem, events);
     }
 
     private static string? ReadString(JsonElement element, string name) =>
@@ -371,6 +406,136 @@ public sealed class LogIngestionService : ILogIngestionService
         return false;
     }
 
+    private static readonly Regex AnsiPattern = new(
+        @"\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)",
+        Options,
+        RegexTimeout);
+
+    private static readonly HashSet<string> CommandEventNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "command", "cmd", "exec", "execute", "shell"
+    };
+
+    private static readonly HashSet<string> ExitEventNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "exit", "exit_code", "exitcode"
+    };
+
+    private static readonly Regex[] CommandPatterns = [AnchorPatterns[0], AnchorPatterns[1]];
+
+    private static readonly Regex ExitCodePattern = AnchorPatterns[4];
+
+    private static readonly Regex ErrorPattern = new(
+        @"(?<!\b0\s+)\b(?:error|errors|failed|failure)\b(?!\s*[:=]\s*0\b)|\b(?:exception|fatal|panic|traceback|denied)\b|npm ERR!|error CS\d+",
+        Options | RegexOptions.IgnoreCase,
+        RegexTimeout);
+
+    private static readonly Regex ContainerPattern = new(
+        @"\b(?:docker|podman|kubectl|container|containers|compose|image|pulling|pull complete|dockerfile)\b|Step \d+/\d+|Successfully (?:built|tagged)|Container \S+\s+(?:Started|Created|Running|Healthy)",
+        Options | RegexOptions.IgnoreCase,
+        RegexTimeout);
+
+    private static readonly Regex BuildPattern = new(
+        @"\b(?:build|builds|built|compile|compiled|compiling|compilation|msbuild|webpack|vite|tsc|cargo|gradle|mvn|cmake|restore|bundle|bundled)\b",
+        Options | RegexOptions.IgnoreCase,
+        RegexTimeout);
+
+    private const int MaxEventTextLength = 500;
+
+    private static string StripAnsi(string text)
+    {
+        string stripped;
+        try
+        {
+            stripped = AnsiPattern.Replace(text, string.Empty);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            stripped = text;
+        }
+
+        var builder = new System.Text.StringBuilder(stripped.Length);
+        for (var i = 0; i < stripped.Length; i++)
+        {
+            var c = stripped[i];
+            if (c == '\r')
+            {
+                if (i + 1 < stripped.Length && stripped[i + 1] == '\n')
+                {
+                    continue;
+                }
+
+                builder.Append('\n');
+            }
+            else if (c == '\n' || c == '\t' || !char.IsControl(c))
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static TechnicalEvent CreateEvent(
+        int index,
+        double timestampSeconds,
+        string eventType,
+        string? eventName,
+        string text,
+        bool isAnchorable)
+    {
+        var preview = text.Length > MaxEventTextLength ? text[..MaxEventTextLength] + "…" : text;
+        return new TechnicalEvent(index, timestampSeconds, eventType, Classify(eventName, text), preview, isAnchorable);
+    }
+
+    private static TechnicalEventCategory Classify(string? eventName, string text)
+    {
+        if ((eventName is not null && CommandEventNames.Contains(eventName)) || MatchesAny(CommandPatterns, text))
+        {
+            return TechnicalEventCategory.Command;
+        }
+
+        if ((eventName is not null && ExitEventNames.Contains(eventName)) || SafeIsMatch(ExitCodePattern, text))
+        {
+            return TechnicalEventCategory.ExitCode;
+        }
+
+        if (SafeIsMatch(ErrorPattern, text))
+        {
+            return TechnicalEventCategory.Error;
+        }
+
+        if ((eventName is not null && eventName.Equals("container", StringComparison.OrdinalIgnoreCase))
+            || (eventName is not null && eventName.Equals("docker", StringComparison.OrdinalIgnoreCase))
+            || SafeIsMatch(ContainerPattern, text))
+        {
+            return TechnicalEventCategory.Container;
+        }
+
+        if ((eventName is not null && (eventName.Equals("build", StringComparison.OrdinalIgnoreCase)
+                || eventName.Equals("compile", StringComparison.OrdinalIgnoreCase)))
+            || SafeIsMatch(BuildPattern, text))
+        {
+            return TechnicalEventCategory.Build;
+        }
+
+        return TechnicalEventCategory.Output;
+    }
+
+    private static bool MatchesAny(Regex[] patterns, string text) => patterns.Any(pattern => SafeIsMatch(pattern, text));
+
+    private static bool SafeIsMatch(Regex pattern, string text)
+    {
+        try
+        {
+            return pattern.IsMatch(text);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+    }
+
     private static List<string> SplitLines(string content)
     {
         var normalized = content.TrimStart('\uFEFF');
@@ -381,5 +546,9 @@ public sealed class LogIngestionService : ILogIngestionService
             .ToList();
     }
 
-    private readonly record struct ParseOutcome(int ParsedEvents, int AnchorableEvents, string? TimestampProblem);
+    private readonly record struct ParseOutcome(
+        int ParsedEvents,
+        int AnchorableEvents,
+        string? TimestampProblem,
+        IReadOnlyList<TechnicalEvent> Events);
 }
