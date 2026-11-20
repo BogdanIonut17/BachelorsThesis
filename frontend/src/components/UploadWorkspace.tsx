@@ -2,17 +2,19 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import * as defaultApi from '../api';
 import type { UploadInput } from '../api';
-import type { ProcessingSessionDto } from '../types';
+import type { ProcessingSessionDto, SessionArtifactsDto } from '../types';
 import { isTerminalStatus } from '../types';
 import { LOG_EXTENSIONS, VIDEO_EXTENSIONS, parseOffset, validateLogFile, validateVideoFile } from '../validation';
 import { FileDropzone } from './FileDropzone';
 import { PrivacyAlert } from './PrivacyAlert';
 import { ProgressBar } from './ProgressBar';
+import SessionReviewPanel from './SessionReviewPanel';
 
 export interface WorkspaceApi {
   uploadSession: (input: UploadInput, onProgress: (percent: number) => void) => Promise<ProcessingSessionDto>;
   fetchStatus: (id: string, signal?: AbortSignal) => Promise<ProcessingSessionDto>;
   setReferencePoint: (id: string, offsetSeconds: number) => Promise<ProcessingSessionDto>;
+  fetchArtifacts: (id: string, signal?: AbortSignal) => Promise<SessionArtifactsDto>;
 }
 
 interface UploadWorkspaceProps {
@@ -36,6 +38,8 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
   const [session, setSession] = useState<ProcessingSessionDto | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [pollRetry, setPollRetry] = useState(0);
+  const [artifacts, setArtifacts] = useState<SessionArtifactsDto | null>(null);
+  const [artifactsError, setArtifactsError] = useState<string | null>(null);
 
   const [calibrationText, setCalibrationText] = useState('');
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
@@ -72,6 +76,27 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
     };
   }, [api, session, pollIntervalMs, pollRetry]);
 
+  const readyId = session?.status === 'ReadyForReview' ? session.id : null;
+
+  useEffect(() => {
+    if (!readyId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    setArtifactsError(null);
+    api
+      .fetchArtifacts(readyId, controller.signal)
+      .then(setArtifacts)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setArtifactsError(messageOf(error));
+        }
+      });
+
+    return () => controller.abort();
+  }, [api, readyId]);
+
   const selectVideo = (file: File) => {
     const error = validateVideoFile(file);
     setVideoError(error);
@@ -94,6 +119,8 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
     setUploadPercent(0);
     setRequestError(null);
     setSession(null);
+    setArtifacts(null);
+    setArtifactsError(null);
 
     try {
       const created = await api.uploadSession(
@@ -148,6 +175,8 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
     setPhase('idle');
     setCalibrationText('');
     setCalibrationError(null);
+    setArtifacts(null);
+    setArtifactsError(null);
   };
 
   const status = session?.status;
@@ -236,6 +265,11 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
                 percent={session.progressPercent}
                 tone={status === 'ReadyForReview' ? 'emerald' : 'indigo'}
               />
+              {session.processingStage && (
+                <p data-testid="processing-stage" className="text-sm text-slate-600">
+                  Stage: <span className="font-medium text-slate-900">{session.processingStage}</span>
+                </p>
+              )}
               <dl className="grid grid-cols-2 gap-2 text-sm">
                 <dt className="text-slate-500">Status</dt>
                 <dd data-testid="session-status" className="font-medium text-slate-900">
@@ -261,6 +295,11 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
               {status === 'Failed' && (
                 <p role="alert" className="text-sm font-medium text-red-700">
                   Processing failed. Please try uploading again.
+                </p>
+              )}
+              {status === 'Failed' && session.errorMessage && (
+                <p data-testid="error-message" className="rounded-md bg-red-50 p-2 text-sm text-red-700">
+                  {session.errorMessage}
                 </p>
               )}
             </>
@@ -311,6 +350,14 @@ export default function UploadWorkspace({ api = defaultApi, pollIntervalMs = 150
       )}
 
       {session && <PrivacyAlert secrets={session.detectedSecrets} />}
+
+      {readyId && artifactsError && (
+        <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+          {artifactsError}
+        </p>
+      )}
+
+      {readyId && artifacts && <SessionReviewPanel sessionId={readyId} artifacts={artifacts} />}
 
       {session && isTerminalStatus(session.status) && (
         <div>

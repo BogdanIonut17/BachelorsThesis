@@ -1,4 +1,4 @@
-import type { ProcessingSessionDto } from './types';
+import type { ProcessingSessionDto, SessionArtifactsDto } from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -88,6 +88,23 @@ export const fetchStatus = async (id: string, signal?: AbortSignal): Promise<Pro
   }
   return body as ProcessingSessionDto;
 };
+
+export const fetchArtifacts = async (id: string, signal?: AbortSignal): Promise<SessionArtifactsDto> => {
+  const response = await fetch(`/api/sessions/${id}/artifacts`, { signal });
+  const body = parseJson(await response.text());
+  if (!response.ok || !body) {
+    throw new ApiError(
+      extractProblemMessage(body, `Loading review artifacts failed (HTTP ${response.status}).`),
+      response.status,
+    );
+  }
+  return body as SessionArtifactsDto;
+};
+
+export const getVideoUrl = (id: string): string => `/api/sessions/${encodeURIComponent(id)}/video`;
+
+export const getFrameUrl = (id: string, fileName: string): string =>
+  `/api/sessions/${encodeURIComponent(id)}/frames/${encodeURIComponent(fileName)}`;
 
 export const setReferencePoint = async (
   id: string,
