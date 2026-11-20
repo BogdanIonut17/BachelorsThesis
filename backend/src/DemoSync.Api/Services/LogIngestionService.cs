@@ -426,7 +426,7 @@ public sealed class LogIngestionService : ILogIngestionService
     private static readonly Regex ExitCodePattern = AnchorPatterns[4];
 
     private static readonly Regex ErrorPattern = new(
-        @"\b(?:error|errors|exception|fatal|failed|failure|panic|traceback|denied)\b|npm ERR!|error CS\d+",
+        @"(?<!\b0\s+)\b(?:error|errors|failed|failure)\b(?!\s*[:=]\s*0\b)|\b(?:exception|fatal|panic|traceback|denied)\b|npm ERR!|error CS\d+",
         Options | RegexOptions.IgnoreCase,
         RegexTimeout);
 
