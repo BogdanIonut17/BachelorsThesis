@@ -23,6 +23,13 @@ const makeApi = (overrides: Partial<WorkspaceApi> = {}): WorkspaceApi => ({
   uploadSession: vi.fn().mockResolvedValue(baseSession),
   fetchStatus: vi.fn().mockResolvedValue({ ...baseSession, status: 'ReadyForReview', progressPercent: 100 }),
   setReferencePoint: vi.fn().mockResolvedValue({ ...baseSession, status: 'Queued' }),
+  fetchArtifacts: vi.fn().mockResolvedValue({
+    video: { durationSeconds: 10, width: 1280, height: 720, frameRate: 30, hasAudio: true },
+    frames: [],
+    audioIntervals: [],
+    technicalEvents: [],
+    appliedReferenceOffsetSeconds: null,
+  }),
   ...overrides,
 });
 
@@ -190,5 +197,84 @@ describe('UploadWorkspace', () => {
 
     expect(await screen.findByText(/must be valid utf-8 text/i)).toBeInTheDocument();
     expect(submitButton()).toBeEnabled();
+  });
+});
+
+describe('UploadWorkspace media review', () => {
+  const artifacts = {
+    video: { durationSeconds: 30, width: 1280, height: 720, frameRate: 30, hasAudio: true },
+    frames: [{ index: 0, timestampSeconds: 0, fileName: 'frame_0001.jpg' }],
+    audioIntervals: [],
+    technicalEvents: [],
+    appliedReferenceOffsetSeconds: null,
+  };
+
+  const submitFiles = async (api: WorkspaceApi) => {
+    const user = userEvent.setup({ applyAccept: false });
+    render(<UploadWorkspace api={api} pollIntervalMs={5} />);
+    await user.upload(videoInput(), mp4());
+    await user.upload(logInput(), cast());
+    await user.click(submitButton());
+  };
+
+  it('shows the processing stage next to the progress bar', async () => {
+    const api = makeApi({
+      uploadSession: vi.fn().mockResolvedValue({
+        ...baseSession,
+        status: 'Processing',
+        progressPercent: 45,
+        processingStage: 'Extracting keyframes',
+      }),
+      fetchStatus: vi.fn().mockResolvedValue({
+        ...baseSession,
+        status: 'Processing',
+        progressPercent: 45,
+        processingStage: 'Extracting keyframes',
+      }),
+    });
+
+    await submitFiles(api);
+
+    expect(await screen.findByTestId('processing-stage')).toHaveTextContent('Extracting keyframes');
+  });
+
+  it('shows the error message when processing fails', async () => {
+    const api = makeApi({
+      uploadSession: vi.fn().mockResolvedValue({
+        ...baseSession,
+        status: 'Failed',
+        processingStage: 'Failed',
+        errorMessage: 'ffprobe exited with code 1: Invalid data found',
+      }),
+    });
+
+    await submitFiles(api);
+
+    expect(await screen.findByTestId('error-message')).toHaveTextContent('ffprobe exited with code 1');
+  });
+
+  it('fetches artifacts automatically and renders the review panel when ready', async () => {
+    const api = makeApi({
+      uploadSession: vi.fn().mockResolvedValue({ ...baseSession, status: 'ReadyForReview', progressPercent: 100 }),
+      fetchArtifacts: vi.fn().mockResolvedValue(artifacts),
+    });
+
+    await submitFiles(api);
+
+    expect(await screen.findByRole('region', { name: /session review/i })).toBeInTheDocument();
+    expect(api.fetchArtifacts).toHaveBeenCalledWith(baseSession.id, expect.any(AbortSignal));
+    expect(screen.getByTestId('meta-resolution')).toHaveTextContent('1280×720');
+  });
+
+  it('reports an error when artifacts cannot be loaded', async () => {
+    const api = makeApi({
+      uploadSession: vi.fn().mockResolvedValue({ ...baseSession, status: 'ReadyForReview', progressPercent: 100 }),
+      fetchArtifacts: vi.fn().mockRejectedValue(new Error('Artifacts are not available yet.')),
+    });
+
+    await submitFiles(api);
+
+    expect(await screen.findByText(/artifacts are not available yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /session review/i })).not.toBeInTheDocument();
   });
 });
